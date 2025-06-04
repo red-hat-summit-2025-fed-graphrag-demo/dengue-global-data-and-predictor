@@ -1,0 +1,200 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-schema
+  namespace: open-dengue-data
+data:
+  load_data.sql: |
+    -- Create tables
+    CREATE TABLE IF NOT EXISTS national_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    CREATE TABLE IF NOT EXISTS spatial_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    CREATE TABLE IF NOT EXISTS temporal_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS national_data_iso_year_idx ON national_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS national_data_date_range_idx ON national_data(calendar_start_date, calendar_end_date);
+    
+    CREATE INDEX IF NOT EXISTS spatial_data_iso_year_idx ON spatial_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS spatial_data_date_range_idx ON spatial_data(calendar_start_date, calendar_end_date);
+    CREATE INDEX IF NOT EXISTS spatial_data_location_idx ON spatial_data(adm_0_name, adm_1_name, adm_2_name);
+    
+    CREATE INDEX IF NOT EXISTS temporal_data_iso_year_idx ON temporal_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS temporal_data_date_range_idx ON temporal_data(calendar_start_date, calendar_end_date);
+    CREATE INDEX IF NOT EXISTS temporal_data_t_res_idx ON temporal_data(t_res);
+    
+    -- Create convenient views for distinct data access
+    CREATE OR REPLACE VIEW national_data_unique AS
+    SELECT DISTINCT ON (iso_a0, calendar_start_date, calendar_end_date) *
+    FROM national_data
+    ORDER BY iso_a0, calendar_start_date, calendar_end_date, id DESC;
+    
+    CREATE OR REPLACE VIEW spatial_data_unique AS
+    SELECT DISTINCT ON (iso_a0, adm_1_name, adm_2_name, calendar_start_date, calendar_end_date) *
+    FROM spatial_data
+    ORDER BY iso_a0, adm_1_name, adm_2_name, calendar_start_date, calendar_end_date, id DESC;
+        
+    CREATE OR REPLACE VIEW temporal_data_unique AS
+    SELECT DISTINCT ON (iso_a0, calendar_start_date, calendar_end_date, t_res) *
+    FROM temporal_data
+    ORDER BY iso_a0, calendar_start_date, calendar_end_date, t_res, id DESC;
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: csv-data
+  namespace: open-dengue-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dengue-data-import
+  namespace: open-dengue-data
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+      - name: data-importer
+        image: postgres:13
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+        command:
+        - "/bin/bash"
+        - "-c"
+        - |
+          set -e
+          
+          # Connection parameters
+          DB_HOST="postgresql"
+          DB_PORT="5432"
+          DB_NAME="sampledb"
+          DB_USER="user5T0"
+          DB_PASSWORD="I1A37SHxlTjB6ulf"
+          
+          echo "Starting data import process..."
+          
+          # Wait for PostgreSQL to be ready
+          echo "Waiting for PostgreSQL to be ready..."
+          until PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c '\q' 2>/dev/null; do
+            echo "PostgreSQL is unavailable - sleeping"
+            sleep 1
+          done
+          
+          # Create database schema
+          echo "Creating database schema..."
+          PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f /schema/load_data.sql
+          
+          # Process CSV files to handle nulls
+          echo "Processing CSV files..."
+          sed 's/NA//g' /data/National_extract_V1_2_2.csv > /tmp/national_data.csv
+          
+          # Import National data
+          echo "Importing National data..."
+          PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY national_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/national_data.csv' CSV HEADER"
+          
+          # Process and import Spatial data
+          echo "Processing Spatial data..."
+          sed 's/NA//g' /data/Spatial_extract_V1_2_2.csv > /tmp/spatial_data.csv
+          
+          echo "Importing Spatial data..."
+          PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY spatial_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/spatial_data.csv' CSV HEADER"
+          
+          # Process and import Temporal data
+          echo "Processing Temporal data..."
+          sed 's/NA//g' /data/Temporal_extract_V1_2_2.csv > /tmp/temporal_data.csv
+          
+          echo "Importing Temporal data..."
+          PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY temporal_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/temporal_data.csv' CSV HEADER"
+          
+          # Verify data loaded successfully
+          echo "Verifying data loaded successfully..."
+          PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "
+            SELECT 'national_data' as table_name, COUNT(*) as row_count FROM national_data
+            UNION ALL
+            SELECT 'spatial_data' as table_name, COUNT(*) as row_count FROM spatial_data
+            UNION ALL
+            SELECT 'temporal_data' as table_name, COUNT(*) as row_count FROM temporal_data;"
+          
+          echo "Data import complete!"
+        volumeMounts:
+        - name: csv-data
+          mountPath: /data
+          readOnly: true
+        - name: schema
+          mountPath: /schema
+          readOnly: true
+      restartPolicy: Never
+      volumes:
+      - name: csv-data
+        persistentVolumeClaim:
+          claimName: csv-data
+      - name: schema
+        configMap:
+          name: db-schema

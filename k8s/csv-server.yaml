@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: csv-server
+  namespace: open-dengue-data
+  labels:
+    app: csv-server
+spec:
+  containers:
+  - name: http-server
+    image: python:3.9-slim
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        cd /data
+        python -m http.server 8080
+    ports:
+    - containerPort: 8080
+    volumeMounts:
+    - name: csv-data
+      mountPath: /data
+  volumes:
+  - name: csv-data
+    persistentVolumeClaim:
+      claimName: csv-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csv-server
+  namespace: open-dengue-data
+spec:
+  selector:
+    app: csv-server
+  ports:
+  - port: 8080
+    targetPort: 8080

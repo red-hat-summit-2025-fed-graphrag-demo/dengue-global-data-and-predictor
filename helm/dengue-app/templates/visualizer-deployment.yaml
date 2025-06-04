@@ -1,0 +1,758 @@
+{{- if .Values.visualizer.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-visualizer-config
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+data:
+{{- range $key, $value := .Values.visualizer.configMapData }}
+  {{ $key }}: {{ tpl $value $ | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-visualizer-files
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+data:
+  app.py: |
+    from flask import Flask, render_template, request, jsonify
+    import requests
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
+    app = Flask(__name__)
+
+    # Register custom filters
+    @app.template_filter('format_number')
+    def format_number(value):
+        """Format a number with thousand separators"""
+        try:
+            return "{:,}".format(int(value))
+        except (ValueError, TypeError):
+            return value
+
+    # Configuration
+    API_HOST = os.getenv("API_HOST", "dengue-api")
+    API_PORT = os.getenv("API_PORT", "8000")
+    API_BASE_URL = f"http://{API_HOST}:{API_PORT}"
+
+    def get_api_data(endpoint, params=None):
+        """Helper function to call the API"""
+        try:
+            response = requests.get(f"{API_BASE_URL}{endpoint}", params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"API error: {str(e)}")
+            return {"status": "error", "data": None, "message": str(e)}
+
+    @app.route('/')
+    def index():
+        """Main dashboard page"""
+        try:
+            # Get stats for dashboard
+            stats_response = get_api_data('/national/stats')
+            stats = stats_response.get('data', {})
+            
+            # Get top countries
+            countries_response = get_api_data('/national/countries', {'limit': 10})
+            countries = countries_response.get('data', [])
+            
+            # Get yearly data
+            yearly_response = get_api_data('/national/yearly')
+            yearly_data = yearly_response.get('data', [])
+            
+            return render_template(
+                'index.html',
+                stats=stats,
+                countries=countries,
+                yearly_data=yearly_data,
+                api_status=stats_response.get('status', 'error')
+            )
+        except Exception as e:
+            return render_template('error.html', error=str(e))
+
+    @app.route('/country/<country_name>')
+    def country_details(country_name):
+        """Country detail page"""
+        try:
+            # Get country yearly data
+            yearly_response = get_api_data('/national/yearly', {'country': country_name})
+            yearly_data = yearly_response.get('data', [])
+            
+            # Get regional data for the country
+            regions_response = get_api_data('/spatial/regions', {'country': country_name, 'limit': 20})
+            regions = regions_response.get('data', [])
+            
+            # Get temporal data for the country
+            temporal_response = get_api_data('/temporal/data', {'country': country_name, 'limit': 100})
+            temporal_data = temporal_response.get('data', [])
+            
+            return render_template(
+                'country.html',
+                country=country_name,
+                yearly_data=yearly_data,
+                regions=regions,
+                temporal_data=temporal_data,
+                api_status=yearly_response.get('status', 'error')
+            )
+        except Exception as e:
+            return render_template('error.html', error=str(e))
+
+    @app.route('/api/proxy/<path:endpoint>')
+    def api_proxy(endpoint):
+        """Proxy API requests to backend API service"""
+        params = {k: v for k, v in request.args.items()}
+        response = get_api_data(f'/{endpoint}', params)
+        return jsonify(response)
+
+    @app.route('/health')
+    def health():
+        """Health check endpoint"""
+        try:
+            # Check API health
+            api_health = get_api_data('/health')
+            return jsonify({
+                "status": "healthy",
+                "api_status": api_health.get('status', 'error'),
+                "api_connection": "ok" if api_health.get('status') == "healthy" else "error"
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "unhealthy",
+                "message": str(e)
+            }), 500
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=5000, debug=True)
+  
+  requirements.txt: |
+    flask==2.3.3
+    requests==2.31.0
+    python-dotenv==1.0.0
+    gunicorn==21.2.0
+  
+  start.sh: |
+    #!/bin/bash
+    set -e
+
+    echo "Installing dependencies..."
+    pip install --no-cache-dir --user -r /app/requirements.txt
+    export PATH=$PATH:$HOME/.local/bin
+
+    echo "Starting visualizer server..."
+    cd /app
+    gunicorn --bind 0.0.0.0:5000 app:app
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-visualizer-templates
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+data:
+  base.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>{{ "{% block title %}Dengue Data Visualizer{% endblock %}" }}</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <style>
+          body {
+              font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+              background-color: #f8f9fa;
+          }
+          
+          .card {
+              box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+              margin-bottom: 1.5rem;
+          }
+          
+          .card-header {
+              background-color: #f8f9fa;
+              border-bottom: 1px solid rgba(0, 0, 0, 0.125);
+              font-weight: bold;
+          }
+          
+          .navbar {
+              box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+          }
+          
+          .table th {
+              background-color: #f8f9fa;
+          }
+          
+          .breadcrumb {
+              background-color: transparent;
+              padding-left: 0;
+          }
+          
+          canvas {
+              max-height: 400px;
+          }
+          
+          footer {
+              margin-top: 2rem;
+              color: #6c757d;
+          }
+        </style>
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="/">Dengue Data Visualizer</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <a class="nav-link" href="/">Dashboard</a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" href="#" id="api-docs-link">API Docs</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </nav>
+
+        <div class="container mt-4">
+            {{ "{% block content %}{% endblock %}" }}
+        </div>
+
+        <footer class="mt-5 py-3 bg-light text-center">
+            <div class="container">
+                <p class="mb-0">© 2025 Dengue Data Visualizer</p>
+            </div>
+        </footer>
+
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script>
+            document.getElementById('api-docs-link').addEventListener('click', function(e) {
+                e.preventDefault();
+                // Use environment variables set in the Pod
+                const apiHostname = '';  // Will use proxying instead
+                const apiPort = '';
+                // Use relative URL if we're in the same cluster
+                const docsUrl = apiHostname ? `//${apiHostname}:${apiPort}/docs` : '/api/proxy/docs';
+                window.open(docsUrl, '_blank');
+            });
+        </script>
+        {{ "{% block scripts %}{% endblock %}" }}
+    </body>
+    </html>
+  
+  index.html: |
+    {{ "{% extends \"base.html\" %}" }}
+
+    {{ "{% block title %}Dengue Data Dashboard{% endblock %}" }}
+
+    {{ "{% block content %}" }}
+    <div class="row">
+        <div class="col-12">
+            <h1 class="mb-4">Dengue Fever Global Dashboard</h1>
+            
+            {{ "{% if api_status != 'success' %}" }}
+            <div class="alert alert-danger">
+                <strong>Error connecting to API:</strong> Unable to retrieve data. Please check the API service.
+            </div>
+            {{ "{% endif %}" }}
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card text-white bg-primary mb-3">
+                <div class="card-header">Total Records</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ "{{ stats.total_records|default(0)|int|format_number }}" }}</h5>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-success mb-3">
+                <div class="card-header">Total Cases</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ "{{ stats.total_cases|default(0)|int|format_number }}" }}</h5>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-info mb-3">
+                <div class="card-header">Countries</div>
+                <div class="card-body">
+                    <h5 class="card-title">{{ "{{ stats.countries_count|default(0) }}" }}</h5>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-white bg-warning mb-3">
+                <div class="card-header">Year Range</div>
+                <div class="card-body">
+                    <h5 class="card-title">
+                        {{ "{% if stats.year_range %}" }}
+                            {{ "{{ stats.year_range[0] }} - {{ stats.year_range[-1] }}" }}
+                        {{ "{% else %}" }}
+                            N/A
+                        {{ "{% endif %}" }}
+                    </h5>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Yearly Dengue Cases Worldwide</h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="yearlyChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Top 10 Countries by Cases</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Country</th>
+                                    <th>Cases</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{ "{% for country in countries %}" }}
+                                <tr>
+                                    <td>{{ "{{ country.country }}" }}</td>
+                                    <td>{{ "{{ country.total_cases|int|format_number }}" }}</td>
+                                    <td>
+                                        <a href="{{ "{{ url_for('country_details', country_name=country.country) }}" }}" class="btn btn-sm btn-primary">View</a>
+                                    </td>
+                                </tr>
+                                {{ "{% endfor %}" }}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {{ "{% endblock %}" }}
+
+    {{ "{% block scripts %}" }}
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Data preparation for yearly chart
+            const yearlyData = {{ "{{ yearly_data|tojson }}" }};
+            const years = yearlyData.map(item => item.year);
+            const cases = yearlyData.map(item => item.total_cases);
+
+            // Create the yearly chart
+            const ctx = document.getElementById('yearlyChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: years,
+                    datasets: [{
+                        label: 'Dengue Cases',
+                        data: cases,
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Cases'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Year'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Yearly Dengue Cases Worldwide'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    let label = context.dataset.label || '';
+                                    if (label) {
+                                        label += ': ';
+                                    }
+                                    if (context.parsed.y !== null) {
+                                        label += new Intl.NumberFormat().format(context.parsed.y);
+                                    }
+                                    return label;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+    {{ "{% endblock %}" }}
+  
+  country.html: |
+    {{ "{% extends \"base.html\" %}" }}
+
+    {{ "{% block title %}{{ country }} Dengue Data{% endblock %}" }}
+
+    {{ "{% block content %}" }}
+    <div class="row">
+        <div class="col-12">
+            <nav aria-label="breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="/">Dashboard</a></li>
+                    <li class="breadcrumb-item active">{{ "{{ country }}" }}</li>
+                </ol>
+            </nav>
+            
+            <h1 class="mb-4">{{ "{{ country }}" }} Dengue Data</h1>
+            
+            {{ "{% if api_status != 'success' %}" }}
+            <div class="alert alert-danger">
+                <strong>Error:</strong> Unable to retrieve data. Please check the API service.
+            </div>
+            {{ "{% endif %}" }}
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-8">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Yearly Dengue Cases in {{ "{{ country }}" }}</h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="countryYearlyChart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Top Regions by Cases</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Region</th>
+                                    <th>Cases</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{ "{% for region in regions %}" }}
+                                <tr>
+                                    <td>{{ "{{ region.region }}" }}</td>
+                                    <td>{{ "{{ region.total_cases|int|format_number }}" }}</td>
+                                </tr>
+                                {{ "{% endfor %}" }}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Temporal Data</h5>
+                </div>
+                <div class="card-body">
+                    <canvas id="temporalChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Recent Data Points</h5>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped">
+                            <thead>
+                                <tr>
+                                    <th>Start Date</th>
+                                    <th>End Date</th>
+                                    <th>Year</th>
+                                    <th>Cases</th>
+                                    <th>Time Resolution</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {{ "{% for item in temporal_data[:20] %}" }}
+                                <tr>
+                                    <td>{{ "{{ item.start_date }}" }}</td>
+                                    <td>{{ "{{ item.end_date }}" }}</td>
+                                    <td>{{ "{{ item.year }}" }}</td>
+                                    <td>{{ "{{ item.dengue_cases|int|format_number }}" }}</td>
+                                    <td>{{ "{{ item.time_resolution }}" }}</td>
+                                </tr>
+                                {{ "{% endfor %}" }}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {{ "{% endblock %}" }}
+
+    {{ "{% block scripts %}" }}
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Country yearly data chart
+            const yearlyData = {{ "{{ yearly_data|tojson }}" }};
+            const years = yearlyData.map(item => item.year);
+            const cases = yearlyData.map(item => item.total_cases);
+
+            // Create the country yearly chart
+            const yearlyCtx = document.getElementById('countryYearlyChart').getContext('2d');
+            new Chart(yearlyCtx, {
+                type: 'bar',
+                data: {
+                    labels: years,
+                    datasets: [{
+                        label: 'Dengue Cases',
+                        data: cases,
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Cases'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Year'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Yearly Dengue Cases in {{ "{{ country }}" }}'
+                        }
+                    }
+                }
+            });
+
+            // Temporal data chart
+            const temporalData = {{ "{{ temporal_data|tojson }}" }};
+            const dates = temporalData.map(item => item.start_date);
+            const temporalCases = temporalData.map(item => item.dengue_cases);
+
+            // Create the temporal chart
+            const temporalCtx = document.getElementById('temporalChart').getContext('2d');
+            new Chart(temporalCtx, {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [{
+                        label: 'Dengue Cases',
+                        data: temporalCases,
+                        fill: false,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Cases'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Temporal Dengue Cases in {{ "{{ country }}" }}'
+                        }
+                    }
+                }
+            });
+        });
+    </script>
+    {{ "{% endblock %}" }}
+  
+  error.html: |
+    {{ "{% extends \"base.html\" %}" }}
+
+    {{ "{% block title %}Error{% endblock %}" }}
+
+    {{ "{% block content %}" }}
+    <div class="row">
+        <div class="col-12 text-center">
+            <div class="alert alert-danger mt-5">
+                <h3 class="alert-heading">Error</h3>
+                <p>{{ "{{ error }}" }}</p>
+                <hr>
+                <p class="mb-0">
+                    <a href="/" class="btn btn-primary">Return to Dashboard</a>
+                </p>
+            </div>
+        </div>
+    </div>
+    {{ "{% endblock %}" }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-visualizer
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-visualizer
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-visualizer
+        {{- include "dengue-app.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: visualizer
+          image: "{{ .Values.visualizer.image.repository }}:{{ .Values.visualizer.image.tag }}"
+          imagePullPolicy: {{ .Values.visualizer.image.pullPolicy }}
+          command: ["sh", "/app/start.sh"]
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          env:
+            - name: API_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-visualizer-config
+                  key: API_HOST
+            - name: API_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ .Release.Name }}-visualizer-config
+                  key: API_PORT
+          resources:
+            {{- toYaml .Values.visualizer.resources | nindent 12 }}
+          volumeMounts:
+            - name: app-files
+              mountPath: /app
+            - name: templates
+              mountPath: /app/templates
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: app-files
+          configMap:
+            name: {{ .Release.Name }}-visualizer-files
+            defaultMode: 0755
+        - name: templates
+          configMap:
+            name: {{ .Release.Name }}-visualizer-templates
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-visualizer
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+spec:
+  type: {{ .Values.visualizer.service.type }}
+  ports:
+    - port: {{ .Values.visualizer.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Release.Name }}-visualizer
+{{- if .Values.visualizer.route.enabled }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ .Release.Name }}-visualizer
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-visualizer
+spec:
+  {{- if .Values.visualizer.route.host }}
+  host: {{ .Values.visualizer.route.host }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ .Release.Name }}-visualizer
+  port:
+    targetPort: http
+{{- end }}
+{{- end }}

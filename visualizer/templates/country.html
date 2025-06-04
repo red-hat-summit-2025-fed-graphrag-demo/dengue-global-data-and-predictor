@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+
+{% block title %}{{ country }} Dengue Data{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Dashboard</a></li>
+                <li class="breadcrumb-item active">{{ country }}</li>
+            </ol>
+        </nav>
+        
+        <h1 class="mb-4">{{ country }} Dengue Data</h1>
+        
+        {% if api_status != 'success' %}
+        <div class="alert alert-danger">
+            <strong>Error:</strong> Unable to retrieve data. Please check the API service.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Yearly Dengue Cases in {{ country }}</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="countryYearlyChart"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Top Regions by Cases</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Region</th>
+                                <th>Cases</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for region in regions %}
+                            <tr>
+                                <td>{{ region.region }}</td>
+                                <td>{{ region.total_cases|int|format_number }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Temporal Data</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="temporalChart"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Recent Data Points</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped">
+                        <thead>
+                            <tr>
+                                <th>Start Date</th>
+                                <th>End Date</th>
+                                <th>Year</th>
+                                <th>Cases</th>
+                                <th>Time Resolution</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in temporal_data[:20] %}
+                            <tr>
+                                <td>{{ item.start_date }}</td>
+                                <td>{{ item.end_date }}</td>
+                                <td>{{ item.year }}</td>
+                                <td>{{ item.dengue_cases|int|format_number }}</td>
+                                <td>{{ item.time_resolution }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Country yearly data chart
+        const yearlyData = {{ yearly_data|tojson }};
+        const years = yearlyData.map(item => item.year);
+        const cases = yearlyData.map(item => item.total_cases);
+
+        // Create the country yearly chart
+        const yearlyCtx = document.getElementById('countryYearlyChart').getContext('2d');
+        new Chart(yearlyCtx, {
+            type: 'bar',
+            data: {
+                labels: years,
+                datasets: [{
+                    label: 'Dengue Cases',
+                    data: cases,
+                    backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                    borderColor: 'rgba(255, 99, 132, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Number of Cases'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Year'
+                        }
+                    }
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Yearly Dengue Cases in {{ country }}'
+                    }
+                }
+            }
+        });
+
+        // Temporal data chart
+        const temporalData = {{ temporal_data|tojson }};
+        const dates = temporalData.map(item => item.start_date);
+        const temporalCases = temporalData.map(item => item.dengue_cases);
+
+        // Create the temporal chart
+        const temporalCtx = document.getElementById('temporalChart').getContext('2d');
+        new Chart(temporalCtx, {
+            type: 'line',
+            data: {
+                labels: dates,
+                datasets: [{
+                    label: 'Dengue Cases',
+                    data: temporalCases,
+                    fill: false,
+                    borderColor: 'rgba(75, 192, 192, 1)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Number of Cases'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Date'
+                        }
+                    }
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Temporal Dengue Cases in {{ country }}'
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,300 @@
+{{- if .Values.dataImport.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.dataImport.configMap.name }}
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-data-import
+data:
+  load_data.sql: |
+    -- Create tables
+    CREATE TABLE IF NOT EXISTS national_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    CREATE TABLE IF NOT EXISTS spatial_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    CREATE TABLE IF NOT EXISTS temporal_data (
+        id SERIAL PRIMARY KEY,
+        adm_0_name VARCHAR(255),
+        adm_1_name VARCHAR(255),
+        adm_2_name VARCHAR(255),
+        full_name VARCHAR(255),
+        iso_a0 VARCHAR(10),
+        fao_gaul_code BIGINT,
+        rne_iso_code VARCHAR(10),
+        ibge_code VARCHAR(255),
+        calendar_start_date DATE,
+        calendar_end_date DATE,
+        year INT,
+        dengue_total FLOAT,
+        case_definition_standardised VARCHAR(50),
+        s_res VARCHAR(50),
+        t_res VARCHAR(50),
+        uuid VARCHAR(100)
+    );
+    
+    -- Create indexes
+    CREATE INDEX IF NOT EXISTS national_data_iso_year_idx ON national_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS national_data_date_range_idx ON national_data(calendar_start_date, calendar_end_date);
+    
+    CREATE INDEX IF NOT EXISTS spatial_data_iso_year_idx ON spatial_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS spatial_data_date_range_idx ON spatial_data(calendar_start_date, calendar_end_date);
+    CREATE INDEX IF NOT EXISTS spatial_data_location_idx ON spatial_data(adm_0_name, adm_1_name, adm_2_name);
+    
+    CREATE INDEX IF NOT EXISTS temporal_data_iso_year_idx ON temporal_data(iso_a0, year);
+    CREATE INDEX IF NOT EXISTS temporal_data_date_range_idx ON temporal_data(calendar_start_date, calendar_end_date);
+    CREATE INDEX IF NOT EXISTS temporal_data_t_res_idx ON temporal_data(t_res);
+    
+    -- Create views
+    CREATE OR REPLACE VIEW national_data_unique AS
+    SELECT DISTINCT ON (iso_a0, calendar_start_date, calendar_end_date) *
+    FROM national_data
+    ORDER BY iso_a0, calendar_start_date, calendar_end_date, id DESC;
+    
+    CREATE OR REPLACE VIEW spatial_data_unique AS
+    SELECT DISTINCT ON (iso_a0, adm_1_name, adm_2_name, calendar_start_date, calendar_end_date) *
+    FROM spatial_data
+    ORDER BY iso_a0, adm_1_name, adm_2_name, calendar_start_date, calendar_end_date, id DESC;
+        
+    CREATE OR REPLACE VIEW temporal_data_unique AS
+    SELECT DISTINCT ON (iso_a0, calendar_start_date, calendar_end_date, t_res) *
+    FROM temporal_data
+    ORDER BY iso_a0, calendar_start_date, calendar_end_date, t_res, id DESC;
+  
+  import-script.sh: |
+    #!/bin/bash
+    set -e
+    
+    # Get DB credentials from environment
+    DB_HOST=${DB_HOST:-{{ .Release.Name }}-postgresql}
+    DB_PORT=${DB_PORT:-5432}
+    DB_NAME=${DB_NAME:-sampledb}
+    DB_USER=${DB_USER:-user5T0}
+    DB_PASSWORD=${DB_PASSWORD:-I1A37SHxlTjB6ulf}
+    
+    echo "Starting data load process..."
+    
+    # Wait for PostgreSQL to be ready
+    echo "Waiting for PostgreSQL to be ready..."
+    until PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c '\q' 2>/dev/null; do
+      echo "PostgreSQL is unavailable - sleeping"
+      sleep 1
+    done
+    
+    echo "PostgreSQL is up - creating schema..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f /scripts/load_data.sql
+    
+    # Process CSV files to handle nulls
+    echo "Processing CSV files..."
+    sed 's/NA//g' /data/{{ .Values.dataImport.csv.national }} > /tmp/national_data.csv
+    sed 's/NA//g' /data/{{ .Values.dataImport.csv.spatial }} > /tmp/spatial_data.csv
+    sed 's/NA//g' /data/{{ .Values.dataImport.csv.temporal }} > /tmp/temporal_data.csv
+    
+    # Clear existing data
+    echo "Clearing existing data..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "
+      TRUNCATE national_data;
+      TRUNCATE spatial_data;
+      TRUNCATE temporal_data;"
+    
+    # Load data with error handling
+    echo "Loading National data..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY national_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/national_data.csv' CSV HEADER"
+    
+    echo "Loading Spatial data..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY spatial_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/spatial_data.csv' CSV HEADER" || echo "Warning: Some errors occurred during spatial data import"
+    
+    echo "Loading Temporal data..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "\COPY temporal_data(adm_0_name, adm_1_name, adm_2_name, full_name, iso_a0, fao_gaul_code, rne_iso_code, ibge_code, calendar_start_date, calendar_end_date, year, dengue_total, case_definition_standardised, s_res, t_res, uuid) FROM '/tmp/temporal_data.csv' CSV HEADER" || echo "Warning: Some errors occurred during temporal data import"
+    
+    # Verify data loaded successfully
+    echo "Verifying data loaded successfully..."
+    PGPASSWORD=$DB_PASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c "
+      SELECT 'national_data' as table_name, COUNT(*) as row_count FROM national_data
+      UNION ALL
+      SELECT 'spatial_data' as table_name, COUNT(*) as row_count FROM spatial_data
+      UNION ALL
+      SELECT 'temporal_data' as table_name, COUNT(*) as row_count FROM temporal_data;"
+    
+    echo "Data import complete!"
+---
+{{- if .Values.dataImport.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-csv-data
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-data-import
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.dataImport.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-csv-server
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-csv-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-csv-server
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-csv-server
+        {{- include "dengue-app.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: http-server
+          image: python:3.9-slim
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              cd /data
+              python -m http.server 8080
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: csv-data
+              mountPath: /data
+      volumes:
+        - name: csv-data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-csv-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-csv-server
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-csv-server
+spec:
+  selector:
+    app: {{ .Release.Name }}-csv-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+{{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-data-import
+  labels:
+    {{- include "dengue-app.labels" . | nindent 4 }}
+    app: {{ .Release.Name }}-data-import
+spec:
+  backoffLimit: {{ .Values.dataImport.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-data-import
+        {{- include "dengue-app.labels" . | nindent 8 }}
+    spec:
+      initContainers:
+      - name: wait-for-postgresql
+        image: busybox
+        command: ['sh', '-c', 'until nslookup {{ .Release.Name }}-postgresql; do echo waiting for postgresql; sleep 2; done;']
+      - name: create-csv-files
+        image: {{ .Values.dataImport.image.repository }}:{{ .Values.dataImport.image.tag }}
+        command: ["sh", "-c"]
+        args:
+          - |
+            echo "Creating mock CSV files for testing..."
+            echo "adm_0_name,adm_1_name,adm_2_name,full_name,iso_a0,fao_gaul_code,rne_iso_code,ibge_code,calendar_start_date,calendar_end_date,year,dengue_total,case_definition_standardised,s_res,t_res,uuid" > /data/National_extract_V1_2_2.csv
+            echo "Brazil,,,,BRA,30,BRA,,2019-01-01,2019-12-31,2019,1234567,Confirmed,National,,12345-abcde" >> /data/National_extract_V1_2_2.csv
+            echo "India,,,,IND,115,IND,,2020-01-01,2020-12-31,2020,987654,Confirmed,National,,12346-abcdf" >> /data/National_extract_V1_2_2.csv
+            echo "Thailand,,,,THA,216,THA,,2021-01-01,2021-12-31,2021,567890,Confirmed,National,,12347-abcdg" >> /data/National_extract_V1_2_2.csv
+            cp /data/National_extract_V1_2_2.csv /data/Spatial_extract_V1_2_2.csv
+            cp /data/National_extract_V1_2_2.csv /data/Temporal_extract_V1_2_2.csv
+            ls -l /data/
+        volumeMounts:
+        - name: csv-data
+          mountPath: /data
+      containers:
+      - name: data-import
+        image: "{{ .Values.dataImport.image.repository }}:{{ .Values.dataImport.image.tag }}"
+        imagePullPolicy: {{ .Values.dataImport.image.pullPolicy }}
+        command: ["/bin/bash", "/scripts/import-script.sh"]
+        env:
+        - name: DB_HOST
+          value: "{{ .Release.Name }}-postgresql"
+        - name: DB_PORT
+          value: "5432"
+        - name: DB_NAME
+          value: "sampledb"
+        - name: DB_USER
+          value: "user5T0"
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-postgresql
+              key: password
+        resources:
+          {{- toYaml .Values.dataImport.resources | nindent 10 }}
+        volumeMounts:
+        - name: csv-data
+          mountPath: /data
+        - name: scripts
+          mountPath: /scripts
+      volumes:
+      - name: source-data
+        emptyDir: {}
+      - name: csv-data
+        {{- if .Values.dataImport.persistence.enabled }}
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-csv-data
+        {{- else }}
+        emptyDir: {}
+        {{- end }}
+      - name: scripts
+        configMap:
+          name: {{ .Values.dataImport.configMap.name }}
+          defaultMode: 0755
+      restartPolicy: Never
+{{- end }}

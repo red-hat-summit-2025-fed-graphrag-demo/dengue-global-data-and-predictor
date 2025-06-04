@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}Dengue Data Dashboard{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">Dengue Fever Global Dashboard</h1>
+        
+        {% if api_status != 'success' %}
+        <div class="alert alert-danger">
+            <strong>Error connecting to API:</strong> Unable to retrieve data. Please check the API service.
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary mb-3">
+            <div class="card-header">Total Records</div>
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.total_records|default(0)|int|format_number }}</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success mb-3">
+            <div class="card-header">Total Cases</div>
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.total_cases|default(0)|int|format_number }}</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info mb-3">
+            <div class="card-header">Countries</div>
+            <div class="card-body">
+                <h5 class="card-title">{{ stats.countries_count|default(0) }}</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning mb-3">
+            <div class="card-header">Year Range</div>
+            <div class="card-body">
+                <h5 class="card-title">
+                    {% if stats.year_range %}
+                        {{ stats.year_range[0] }} - {{ stats.year_range[-1] }}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </h5>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Yearly Dengue Cases Worldwide</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="yearlyChart"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5>Top 10 Countries by Cases</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-hover">
+                        <thead>
+                            <tr>
+                                <th>Country</th>
+                                <th>Cases</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for country in countries %}
+                            <tr>
+                                <td>{{ country.country }}</td>
+                                <td>{{ country.total_cases|int|format_number }}</td>
+                                <td>
+                                    <a href="{{ url_for('country_details', country_name=country.country) }}" class="btn btn-sm btn-primary">View</a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Data preparation for yearly chart
+        const yearlyData = {{ yearly_data|tojson }};
+        const years = yearlyData.map(item => item.year);
+        const cases = yearlyData.map(item => item.total_cases);
+
+        // Create the yearly chart
+        const ctx = document.getElementById('yearlyChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: years,
+                datasets: [{
+                    label: 'Dengue Cases',
+                    data: cases,
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                    borderColor: 'rgba(54, 162, 235, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Number of Cases'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Year'
+                        }
+                    }
+                },
+                plugins: {
+                    title: {
+                        display: true,
+                        text: 'Yearly Dengue Cases Worldwide'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += new Intl.NumberFormat().format(context.parsed.y);
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    });
+</script>
+{% endblock %}
